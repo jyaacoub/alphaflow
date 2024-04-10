@@ -27,10 +27,12 @@ parser.add_argument('--world_size', type=int, default=1)
 
 args = parser.parse_args()
 
+import functools
 import torch, tqdm, os, json, time
 import numpy as np
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import CPUOffload
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, wrap
 
 from collections import defaultdict
 from alphaflow.data.data_modules import collate_fn
@@ -68,6 +70,14 @@ def setup(rank, world_size):
 def cleanup():
     torch.distributed.destroy_process_group()
     
+def custom_autowrap_policy(module, recurse, unwrapped_params):
+    """
+    FSDP Wrapping policy to target only the AlphaFold.extra_msa_stack module
+    """
+    if recurse:
+        return True
+    return isinstance(module, torch.nn.Module) and 'extra_msa_stack' in module.__class__.__name__
+
 @torch.no_grad()
 def main():
     if args.rank != 0:
@@ -95,13 +105,24 @@ def main():
     ckpt = torch.load(args.weights, map_location='cpu')
     model = model_class(**ckpt['hyper_parameters'], training=False)
     model.model.load_state_dict(ckpt['params'], strict=False)
-    model = model.cuda()
-    model.eval()
+    
+    # loop through params to ensure that ALL requires_grad are set to false
+    for p in model.parameters():
+        p.requires_grad = False
     
     # wrap model with FSDP
     # Assert error due to not all params having same requires_grad...
-    model = FSDP(model)# , cpu_offload=CPUOffload(offload_params=True))
+    model.model = FSDP(model.model, 
+                       cpu_offload=CPUOffload(offload_params=True), 
+                       auto_wrap_policy=custom_autowrap_policy,
+                       device_id=args.rank)
+                    #    auto_wrap_policy=functools.partial(
+                    #        size_based_auto_wrap_policy,
+                    #        min_num_params=2000
+                    #    ))
     
+#    model = model.cuda()
+    model.eval()
     # barrier to ensure all processes have loaded the model
     torch.distributed.barrier()
     
@@ -144,5 +165,5 @@ except Exception as e:
     if args.rank == 0:
         raise e
     time.sleep(1)
-    print(args.rank, "also ran into exception", e)
+    print(f"rank {args.rank} also ran into exception '{e}'")
 
