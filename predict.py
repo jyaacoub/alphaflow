@@ -20,6 +20,8 @@ parser.add_argument('--self_cond', action='store_true', default=False)
 parser.add_argument('--noisy_first', action='store_true', default=False)
 parser.add_argument('--runtime_json', type=str, default=None)
 parser.add_argument('--no_overwrite', action='store_true', default=False)
+parser.add_argument('--low_mem', action='store_true', default=False)
+
 args = parser.parse_args()
 
 import torch, tqdm, os, wandb, json, time
@@ -27,6 +29,7 @@ import pandas as pd
 import pytorch_lightning as pl
 import numpy as np
 from collections import defaultdict
+from alphaflow.config import set_inf
 from alphaflow.data.data_modules import collate_fn
 from alphaflow.model.wrapper import AlphaFoldWrapper, ESMFoldWrapper
 from alphaflow.utils.tensor_utils import tensor_tree_map
@@ -42,13 +45,13 @@ torch.set_float32_matmul_precision("high")
 
 config = model_config(
     'initial_training',
-    train=True, 
-    low_prec=True
+    train=False, 
+    low_prec=True,
+    long_sequence_inference=args.low_mem # only modifies c.globals and c.models
 ) 
 schedule = np.linspace(args.tmax, 0, args.steps+1)
 if args.tmax != 1.0:
     schedule = np.array([1.0] + list(schedule))
-loss_cfg = config.loss
 data_cfg = config.data
 data_cfg.common.use_templates = False
 data_cfg.common.max_recycling_iters = 0
@@ -76,6 +79,27 @@ def main():
 
     if args.weights:
         ckpt = torch.load(args.weights, map_location='cpu')
+    
+        if args.low_mem:
+            c = ckpt['hyper_parameters']['config']
+            
+            c.globals.offload_inference = True
+            c.globals.use_lma = True # Use Staats & Rabe's low-memory attention algorithm.
+            c.globals.use_flash = False # flash attention doesnt work well for long sequences
+            
+            c.model.template.offload_inference = True
+            
+            # not sure why this matters:
+            c.model.template.template_pair_stack.tune_chunk_size = False
+            c.model.extra_msa.extra_msa_stack.tune_chunk_size = False
+            c.model.evoformer_stack.tune_chunk_size = False
+            
+            c.globals.eps = 1e-4
+            # If we want exact numerical parity with the original, inf can't be
+            # a global constant
+            set_inf(c, 1e4)
+            print(c.globals)
+        
         model = model_class(**ckpt['hyper_parameters'], training=False)
         model.model.load_state_dict(ckpt['params'], strict=False)
         model = model.cuda()
@@ -102,14 +126,17 @@ def main():
     
     logger.info("Model has been loaded")
     
-    results = defaultdict(list)
     os.makedirs(args.outpdb, exist_ok=True)
     runtime = defaultdict(list)
     for i, item in enumerate(valset):
-        if args.pdb_id and item['name'] not in args.pdb_id:
+        if (args.pdb_id and item['name'] not in args.pdb_id):
             continue
-        if args.no_overwrite and os.path.exists(f'{args.outpdb}/{item["name"]}.pdb'):
+        
+        out_fp = f'{args.outpdb}/{item["name"]}.pdb'
+        if os.path.exists(out_fp) and args.no_overwrite:
+            print(f"{i}:{item['name']} already exists, skipping...")
             continue
+        
         result = []
         for j in tqdm.trange(args.samples):
             if args.subsample or args.resample:
@@ -125,7 +152,7 @@ def main():
             
 
 
-        with open(f'{args.outpdb}/{item["name"]}.pdb', 'w') as f:
+        with open(out_fp, 'w') as f:
             f.write(protein.prots_to_pdb(result))
 
     if args.runtime_json:

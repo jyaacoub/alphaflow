@@ -125,7 +125,8 @@ class AlphaFold(nn.Module):
         dgram = ((dists > lower) * (dists < upper)).type(dists.dtype)
 
         inp_z = self.input_pair_embedding(dgram * mask.unsqueeze(-1))
-        inp_z = self.input_pair_stack(inp_z, mask, chunk_size=None)
+        inp_z = self.input_pair_stack(inp_z, mask, chunk_size=None, 
+                                      use_lma=self.globals.use_lma)
         return inp_z
 
     def _get_extra_input_pair_embeddings(self, dists, mask):
