@@ -8,11 +8,7 @@ parser.add_argument('--samples', type=int, default=10)
 parser.add_argument('--steps', type=int, default=10)
 parser.add_argument('--outpdb', type=str, default='./outpdb/default')
 parser.add_argument('--weights', type=str, default=None)
-#parser.add_argument('--ckpt', type=str, default=None)
-#parser.add_argument('--original_weights', action='store_true')
-parser.add_argument('--pdb_id', nargs='*', default=[])
-#parser.add_argument('--subsample', type=int, default=None) # for MSA subsampling
-#parser.add_argument('--resample', action='store_true')     # simple resampling of MSA
+parser.add_argument('--pdb_id', nargs='*', default=[]) # pdbs to ignore
 parser.add_argument('--tmax', type=float, default=1.0)
 parser.add_argument('--templates', action='store_true')
 parser.add_argument('--no_diffusion', action='store_true', default=False)
@@ -22,22 +18,17 @@ parser.add_argument('--runtime_json', type=str, default=None)
 parser.add_argument('--no_overwrite', action='store_true', default=False)
 parser.add_argument('--low_mem', action='store_true', default=False)
 
-parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world_size', type=int, default=1)
+parser.add_argument('--local_rank', type=int, default=0)
+parser.add_argument('--world_size', type=int, default=2)
 
 args = parser.parse_args()
 
-import functools
-import torch, tqdm, os, json, time
-
 import deepspeed
-
+import torch, tqdm, os, json, time
 import numpy as np
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import CPUOffload
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, wrap
 
 from collections import defaultdict
+from alphaflow.config import set_inf
 from alphaflow.data.data_modules import collate_fn
 from alphaflow.model.wrapper import AlphaFoldWrapper, ESMFoldWrapper
 from alphaflow.utils.tensor_utils import tensor_tree_map
@@ -48,13 +39,13 @@ from alphaflow.config import model_config
 
 from alphaflow.utils.logging import get_logger
 logger = get_logger(__name__)
-torch.set_float32_matmul_precision("high")
+torch.set_float32_matmul_precision("medium")
 
 config = model_config(
     'initial_training',
     train=False, 
     low_prec=True,
-    long_sequence_inference=args.low_mem # only modifies c.globals and c.models
+    long_sequence_inference=args.low_mem # modifies c.globals and c.models
 ) 
 schedule = np.linspace(args.tmax, 0, args.steps+1)
 if args.tmax != 1.0:
@@ -65,7 +56,7 @@ data_cfg.common.max_recycling_iters = 0
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'  # Use a free port
+    os.environ['MASTER_PORT'] = '12355'
     # init_method="tcp://localhost:12355"
 
     # Initializes the default distributed process group, and this will also initialize the distributed package
@@ -73,10 +64,10 @@ def setup(rank, world_size):
 
 @torch.no_grad()
 def main():
-    if args.rank != 0:
+    if args.local_rank != 0:
         time.sleep(1)
-    print(args.rank, args.world_size)
-    setup(args.rank, args.world_size)
+    print(args.local_rank, args.world_size)
+    setup(args.local_rank, args.world_size)
 
     ################## GET DATASET ##################
     valset = {
@@ -95,6 +86,27 @@ def main():
     model_class = {'alphafold': AlphaFoldWrapper, 'esmfold': ESMFoldWrapper}[args.mode]
 
     ckpt = torch.load(args.weights, map_location='cpu')
+    
+    if args.low_mem:
+        c = ckpt['hyper_parameters']['config']
+        
+        c.globals.offload_inference = True
+        c.globals.use_lma = True # Use Staats & Rabe's low-memory attention algorithm.
+        c.globals.use_flash = False # flash attention doesnt work well for long sequences
+        
+        c.model.template.offload_inference = True
+        
+        # not sure why this matters:
+        c.model.template.template_pair_stack.tune_chunk_size = False
+        c.model.extra_msa.extra_msa_stack.tune_chunk_size = False
+        c.model.evoformer_stack.tune_chunk_size = False
+        
+        c.globals.eps = 1e-4
+        # If we want exact numerical parity with the original, inf can't be
+        # a global constant
+        set_inf(c, 1e4)
+        if args.local_rank == 0: print(c.globals)
+        
     model = model_class(**ckpt['hyper_parameters'], training=False)
     model.model.load_state_dict(ckpt['params'], strict=False)
     
@@ -103,17 +115,22 @@ def main():
         p.requires_grad = False
     
     engine = deepspeed.init_inference(model,
-                                tensor_parallel={"enabled": True, "tp_size": args.world_size},
-                                # quant={"enabled": True}, # can reduce performance!
-                                zero={"stage": 3}, # for mem performance
-                                dtype=torch.float16, # half percision
-                                replace_with_kernel_inject=False
-                                )
+                tensor_parallel={"enabled": True, "tp_size": args.world_size},
+                #quant={"enabled": True}, # can reduce performance! only for int8 types
+                zero={"stage": 2,
+                    "offload_optimizer": {
+                        "device": "cpu"
+                        },
+                    "contiguous_gradients": True}, # for mem performance
+                dtype=torch.bfloat16, # half percision
+                replace_with_kernel_inject=True
+                )
     model = engine.module
+    model.eval()
     
     logger.info("Model has been loaded")
     ################## INFERENCE ##################
-    if args.rank == 0: os.makedirs(args.outpdb, exist_ok=True)
+    if args.local_rank == 0: os.makedirs(args.outpdb, exist_ok=True)
     runtime = defaultdict(list)
     for i, item in enumerate(valset):
         if (args.pdb_id and item['name'] not in args.pdb_id):
@@ -121,10 +138,10 @@ def main():
         
         out_fp = f'{args.outpdb}/{item["name"]}.pdb'
         if os.path.exists(out_fp) and args.no_overwrite:
-            if args.rank == 0: print(f"{i}:{item['name']} already exists, skipping...")
+            if args.local_rank == 0: print(f"{i}:{item['name']} already exists, skipping...")
             continue
         result = []
-        for j in tqdm.trange(args.samples, disable=args.rank != 0):
+        for j in tqdm.trange(args.samples, disable=args.local_rank != 0, desc=f"{i}:{item['name']}"):
             batch = collate_fn([item])
             batch = tensor_tree_map(lambda x: x.cuda(), batch)  
             start = time.time()
@@ -134,19 +151,19 @@ def main():
             result.append(prots[-1])
         
         # Save pdb
-        if args.rank == 0:
+        if args.local_rank == 0:
             with open(out_fp, 'w') as f:
                 f.write(protein.prots_to_pdb(result))
 
-    if args.runtime_json and args.rank == 0:
+    if args.runtime_json and args.local_rank == 0:
         with open(args.runtime_json, 'w') as f:
             f.write(json.dumps(dict(runtime)))
 
 try:
     main()
 except Exception as e:
-    if args.rank == 0:
+    if args.local_rank == 0:
         raise e
     time.sleep(1)
-    print(f"rank {args.rank} also ran into exception '{e}'")
+    print(f"rank {args.local_rank} also ran into exception '{e}'")
 

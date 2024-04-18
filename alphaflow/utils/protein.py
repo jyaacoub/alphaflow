@@ -6,6 +6,7 @@ from openfold.np import residue_constants
 from alphaflow.utils.tensor_utils import tensor_tree_map
 import subprocess, tempfile, os, dataclasses
 import numpy as np
+import torch
 from Bio import pairwise2
 
 @dataclasses.dataclass(repr=False)
@@ -60,12 +61,19 @@ class Protein:
 
 def output_to_protein(output):
     """Returns the pbd (file) string from the model given the model output."""
-    output = tensor_tree_map(lambda x: x.cpu().numpy(), output)
+    
+    def safe_move(x):
+        x = x.cpu()
+        if x.dtype == torch.bfloat16:
+            x = x.to(dtype=torch.float16)
+        return x.numpy()
+    output = tensor_tree_map(safe_move, output)
     final_atom_positions = output['final_atom_positions']
     final_atom_mask = output["atom37_atom_exists"]
     pdbs = []
     for i in range(output["aatype"].shape[0]):
         unk_idx = residue_constants.restype_order_with_x["X"]
+        
         seqres = ''.join(
             [residue_constants.restypes[idx] if idx != unk_idx else "X" for idx in output["aatype"][i]]
         )

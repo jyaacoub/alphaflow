@@ -125,7 +125,8 @@ class AlphaFold(nn.Module):
         dgram = ((dists > lower) * (dists < upper)).type(dists.dtype)
 
         inp_z = self.input_pair_embedding(dgram * mask.unsqueeze(-1))
-        inp_z = self.input_pair_stack(inp_z, mask, chunk_size=None)
+        inp_z = self.input_pair_stack(inp_z, mask, chunk_size=None, 
+                                      use_lma=self.globals.use_lma)
         return inp_z
 
     def _get_extra_input_pair_embeddings(self, dists, mask):
@@ -154,11 +155,15 @@ class AlphaFold(nn.Module):
         # Primary output dictionary
         outputs = {}
 
-        # # This needs to be done manually for DeepSpeed's sake
-        # dtype = next(self.parameters()).dtype
-        # for k in feats:
-        #     if(feats[k].dtype == torch.float32):
-        #         feats[k] = feats[k].to(dtype=dtype)
+        # This needs to be done manually for DeepSpeed's sake
+        dtype = next(self.parameters()).dtype
+        for k in feats:
+            if type(feats[k]) is list:
+                for f in feats[k]:
+                    if type(f) is not str and f.dtype == torch.float32:
+                        f = f.to(dtype=dtype)
+            elif(feats[k].dtype == torch.float32):
+                feats[k] = feats[k].to(dtype=dtype)
 
         # Grab some data about the input
         batch_dims = feats["target_feat"].shape[:-2]
