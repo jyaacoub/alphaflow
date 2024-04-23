@@ -116,12 +116,18 @@ def main():
     
     engine = deepspeed.init_inference(model,
                 tensor_parallel={"enabled": True, "tp_size": args.world_size},
-                #quant={"enabled": True}, # can reduce performance! only for int8 types
-                zero={"stage": 2,
-                    "offload_optimizer": {
-                        "device": "cpu"
-                        },
-                    "contiguous_gradients": True}, # for mem performance
+                zero={"stage": 3,
+                     "offload_optimizer": {
+                         "device": "cpu"
+                         },
+                     "contiguous_gradients": True, # prevents fragmentation of memory
+                     "reduce_bucket_size": 5e8, # 500MB
+                    "offload_param": {
+                        "device": "cpu",
+                        "buffer_size": 1e9,                 # 100MB - The size of the buffer for offloading parameters
+                        "max_in_cpu": 1e10,                 # 10GB - The maximum number of elements in the CPU buffer
+                    }
+                }, 
                 dtype=torch.bfloat16, # half percision
                 replace_with_kernel_inject=True
                 )
@@ -141,7 +147,8 @@ def main():
             if args.local_rank == 0: print(f"{i}:{item['name']} already exists, skipping...")
             continue
         result = []
-        for j in tqdm.trange(args.samples, disable=args.local_rank != 0, desc=f"{i}:{item['name']}"):
+        for j in tqdm.trange(args.samples, disable=args.local_rank != 0, ncols=10, 
+                             desc=f"{i}:{item['name']}:{len(item['seqres'])}"):
             batch = collate_fn([item])
             batch = tensor_tree_map(lambda x: x.cuda(), batch)  
             start = time.time()
