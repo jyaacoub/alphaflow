@@ -56,7 +56,7 @@ data_cfg.common.max_recycling_iters = 0
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = '29520'
     # init_method="tcp://localhost:12355"
 
     # Initializes the default distributed process group, and this will also initialize the distributed package
@@ -67,6 +67,7 @@ def main():
     if args.local_rank != 0:
         time.sleep(1)
     print(args.local_rank, args.world_size)
+    # Note: setup is not needed if we use deepspeed at CLI
     setup(args.local_rank, args.world_size)
 
     ################## GET DATASET ##################
@@ -143,12 +144,12 @@ def main():
             continue
         
         out_fp = f'{args.outpdb}/{item["name"]}.pdb'
+        desc = f"{i}:{item['name']}:{len(item['seqres'])}"
         if os.path.exists(out_fp) and args.no_overwrite:
-            if args.local_rank == 0: print(f"{i}:{item['name']} already exists, skipping...")
+            if args.local_rank == 0: print(f"{desc} already exists, skipping...")
             continue
         result = []
-        for j in tqdm.trange(args.samples, disable=args.local_rank != 0, ncols=10, 
-                             desc=f"{i}:{item['name']}:{len(item['seqres'])}"):
+        for _ in tqdm.trange(args.samples, disable=args.local_rank != 0, ncols=100, desc=desc):
             batch = collate_fn([item])
             batch = tensor_tree_map(lambda x: x.cuda(), batch)  
             start = time.time()
