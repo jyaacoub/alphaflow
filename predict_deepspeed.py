@@ -93,11 +93,15 @@ def main():
         
         c.globals.offload_inference = True
         c.globals.use_lma = True # Use Staats & Rabe's low-memory attention algorithm.
+        c.globals.chunk_size = 4
+        
         c.globals.use_flash = False # flash attention doesnt work well for long sequences
         
         c.model.template.offload_inference = True
         
-        # not sure why this matters:
+        # TUNING CHUNK SIZE IS IMPORTANT TO FIND THE RIGHT CHUNK SIZE FOR OUR MODEL 
+        # SO THAT NO MEMORY ERRORS OCCUR
+        # but it just wastes time for longer sequences (see openfold docs: https://github.com/aqlaboratory/openfold?tab=readme-ov-file#monomer-inference)
         c.model.template.template_pair_stack.tune_chunk_size = False
         c.model.extra_msa.extra_msa_stack.tune_chunk_size = False
         c.model.evoformer_stack.tune_chunk_size = False
@@ -119,18 +123,21 @@ def main():
                 tensor_parallel={"enabled": True, "tp_size": args.world_size},
                 zero={"stage": 3,
                      "offload_optimizer": {
-                         "device": "cpu"
-                         },
+                         "pin_memory": True, # pins mem to cpu
+                        "device": "cpu",
+                        },
                      "contiguous_gradients": True, # prevents fragmentation of memory
                      "reduce_bucket_size": 5e8, # 500MB
                     "offload_param": {
+                        "buffer_size": 1e9,                 # 1GB - The size of the buffer for offloading parameters
+                        "max_in_cpu": 22e9,                 # 18GB - The maximum number of elements in the CPU buffer
+                        "pin_memory": True,
                         "device": "cpu",
-                        "buffer_size": 1e9,                 # 100MB - The size of the buffer for offloading parameters
-                        "max_in_cpu": 1e10,                 # 10GB - The maximum number of elements in the CPU buffer
                     }
                 }, 
                 dtype=torch.bfloat16, # half percision
-                replace_with_kernel_inject=True
+                replace_with_kernel_inject=True,
+                
                 )
     model = engine.module
     model.eval()

@@ -111,12 +111,13 @@ def main():
             continue
         
         out_fp = f'{args.outpdb}/{item["name"]}.pdb'
+        desc = f"{i}:{item['name']}:{len(item['seqres'])}"
         if os.path.exists(out_fp) and args.no_overwrite:
-            print(f"{i}:{item['name']} already exists, skipping...")
+            print(f"{desc} already exists, skipping...")
             continue
         
         result = []
-        for j in tqdm.trange(args.samples):
+        for j in tqdm.trange(args.samples, ncols=100, desc=desc):
             if args.subsample or args.resample:
                 item = valset[i] # resample MSA
             
