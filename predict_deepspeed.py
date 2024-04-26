@@ -16,7 +16,10 @@ parser.add_argument('--self_cond', action='store_true', default=False)
 parser.add_argument('--noisy_first', action='store_true', default=False)
 parser.add_argument('--runtime_json', type=str, default=None)
 parser.add_argument('--no_overwrite', action='store_true', default=False)
-parser.add_argument('--low_mem', action='store_true', default=False)
+
+attn_method = parser.add_mutually_exclusive_group()
+attn_method.add_argument('--low_mem', action='store_true', default=False, help="Uses bfloat16 and LMA")
+attn_method.add_argument('--flash', action='store_true', default=False, help="Uses bfloat16 and flash attention (requires CUDA >= 11.6 and torch >= 1.12)")
 
 parser.add_argument('--local_rank', type=int, default=0)
 parser.add_argument('--world_size', type=int, default=2)
@@ -39,7 +42,8 @@ from alphaflow.config import model_config
 
 from alphaflow.utils.logging import get_logger
 logger = get_logger(__name__)
-torch.set_float32_matmul_precision("medium")
+torch.set_float32_matmul_precision(("medium" if args.low_mem or args.flash else 'high'))
+    
 
 config = model_config(
     'initial_training',
@@ -88,17 +92,17 @@ def main():
 
     ckpt = torch.load(args.weights, map_location='cpu')
     
+    c = ckpt['hyper_parameters']['config']
     if args.low_mem:
-        c = ckpt['hyper_parameters']['config']
-        
         c.globals.offload_inference = True
         c.globals.use_lma = True # Use Staats & Rabe's low-memory attention algorithm.
-        c.globals.chunk_size = 4
-        
+        # Default to DeepSpeed memory-efficient attention kernel unless use_lma is explicitly set
+        c.globals.use_deepspeed_evo_attention = True if not c.globals.use_lma else False
         c.globals.use_flash = False # flash attention doesnt work well for long sequences
         
         c.model.template.offload_inference = True
         
+        c.globals.chunk_size = 4
         # TUNING CHUNK SIZE IS IMPORTANT TO FIND THE RIGHT CHUNK SIZE FOR OUR MODEL 
         # SO THAT NO MEMORY ERRORS OCCUR
         # but it just wastes time for longer sequences (see openfold docs: https://github.com/aqlaboratory/openfold?tab=readme-ov-file#monomer-inference)
@@ -111,6 +115,8 @@ def main():
         # a global constant
         set_inf(c, 1e4)
         if args.local_rank == 0: print(c.globals)
+    elif args.flash:
+        c.globals.use_flash = True
         
     model = model_class(**ckpt['hyper_parameters'], training=False)
     model.model.load_state_dict(ckpt['params'], strict=False)
@@ -135,13 +141,12 @@ def main():
                         "device": "cpu",
                     }
                 }, 
-                dtype=torch.bfloat16, # half percision
+                dtype=(torch.bfloat16 if args.low_mem or args.flash else torch.float32),
                 replace_with_kernel_inject=True,
-                
                 )
     model = engine.module
     model.eval()
-    
+        
     logger.info("Model has been loaded")
     ################## INFERENCE ##################
     if args.local_rank == 0: os.makedirs(args.outpdb, exist_ok=True)
