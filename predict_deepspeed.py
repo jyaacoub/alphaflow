@@ -18,14 +18,17 @@ parser.add_argument('--runtime_json', type=str, default=None)
 parser.add_argument('--no_overwrite', action='store_true', default=False)
 
 attn_method = parser.add_mutually_exclusive_group()
-attn_method.add_argument('--low_mem', action='store_true', default=False, help="Uses bfloat16 and LMA")
+attn_method.add_argument('--lma', action='store_true', default=False, help="Uses bfloat16 and LMA")
 attn_method.add_argument('--flash', action='store_true', default=False, help="Uses bfloat16 and flash attention (requires CUDA >= 11.6 and torch >= 1.12)")
+parser.add_argument('--chunk_size', type=int, default=None, 
+                    help="chunk size for reducing memory overhead (lower=less mem; 4 is usually good)")
 
 parser.add_argument('--local_rank', type=int, default=0)
 parser.add_argument('--world_size', type=int, default=2)
 
 args = parser.parse_args()
 
+import socket
 import deepspeed
 import torch, tqdm, os, json, time
 import numpy as np
@@ -42,14 +45,14 @@ from alphaflow.config import model_config
 
 from alphaflow.utils.logging import get_logger
 logger = get_logger(__name__)
-torch.set_float32_matmul_precision(("medium" if args.low_mem or args.flash else 'high'))
+torch.set_float32_matmul_precision(("medium" if args.lma or args.flash else 'high'))
     
 
 config = model_config(
     'initial_training',
     train=False, 
     low_prec=True,
-    long_sequence_inference=args.low_mem # modifies c.globals and c.models
+    long_sequence_inference=args.lma # modifies c.globals and c.models to use low-mem attention
 ) 
 schedule = np.linspace(args.tmax, 0, args.steps+1)
 if args.tmax != 1.0:
@@ -58,13 +61,26 @@ data_cfg = config.data
 data_cfg.common.use_templates = False
 data_cfg.common.max_recycling_iters = 0
 
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '29520'
-    # init_method="tcp://localhost:12355"
+def find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))  # 0 means we ask the OS to bind to a free port provided by the host.
+        return s.getsockname()[1]  # Return the port number assigned.
 
-    # Initializes the default distributed process group, and this will also initialize the distributed package
-    deepspeed.init_distributed("nccl", rank=rank, world_size=world_size)
+def setup(rank, world_size, shared_port=29500):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = str(shared_port)  # Use a centrally managed shared port
+
+    # Attempt to initialize distributed processing
+    try:
+        deepspeed.init_distributed("nccl", rank=rank, world_size=world_size)
+    except RuntimeError as e:
+        print(f"Failed to initialize on port {shared_port}: {str(e)}")
+        if rank == 0:
+            # Only retry for rank 0 or a central node if applicable
+            new_port = find_free_port()
+            print(f"Retrying on new port {new_port}")
+            os.environ['MASTER_PORT'] = str(new_port)
+            deepspeed.init_distributed("nccl", rank=rank, world_size=world_size)
 
 @torch.no_grad()
 def main():
@@ -93,16 +109,18 @@ def main():
     ckpt = torch.load(args.weights, map_location='cpu')
     
     c = ckpt['hyper_parameters']['config']
-    if args.low_mem:
+    c.globals.chunk_size = args.chunk_size # setting to None means no chunking
+    if args.lma:
         c.globals.offload_inference = True
         c.globals.use_lma = True # Use Staats & Rabe's low-memory attention algorithm.
         # Default to DeepSpeed memory-efficient attention kernel unless use_lma is explicitly set
-        c.globals.use_deepspeed_evo_attention = True if not c.globals.use_lma else False
+        # evo attn is hard to setup
+        #c.globals.use_deepspeed_evo_attention = True if not c.globals.use_lma else False
+
         c.globals.use_flash = False # flash attention doesnt work well for long sequences
         
         c.model.template.offload_inference = True
         
-        c.globals.chunk_size = 4
         # TUNING CHUNK SIZE IS IMPORTANT TO FIND THE RIGHT CHUNK SIZE FOR OUR MODEL 
         # SO THAT NO MEMORY ERRORS OCCUR
         # but it just wastes time for longer sequences (see openfold docs: https://github.com/aqlaboratory/openfold?tab=readme-ov-file#monomer-inference)
@@ -141,7 +159,7 @@ def main():
                         "device": "cpu",
                     }
                 }, 
-                dtype=(torch.bfloat16 if args.low_mem or args.flash else torch.float32),
+                dtype=(torch.bfloat16 if args.lma or args.flash else torch.float32),
                 replace_with_kernel_inject=True,
                 )
     model = engine.module
