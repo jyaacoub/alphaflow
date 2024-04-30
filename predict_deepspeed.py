@@ -132,10 +132,10 @@ def main():
         # If we want exact numerical parity with the original, inf can't be
         # a global constant
         set_inf(c, 1e4)
-        if args.local_rank == 0: print(c.globals)
     elif args.flash:
         c.globals.use_flash = True
         
+    if args.local_rank == 0: print(c.globals)
     model = model_class(**ckpt['hyper_parameters'], training=False)
     model.model.load_state_dict(ckpt['params'], strict=False)
     
