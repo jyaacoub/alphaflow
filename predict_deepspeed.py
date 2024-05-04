@@ -22,6 +22,7 @@ attn_method.add_argument('--lma', action='store_true', default=False, help="Uses
 attn_method.add_argument('--flash', action='store_true', default=False, help="Uses bfloat16 and flash attention (requires CUDA >= 11.6 and torch >= 1.12)")
 parser.add_argument('--chunk_size', type=int, default=None, 
                     help="chunk size for reducing memory overhead (lower=less mem; 4 is usually good)")
+parser.add_argument('--low_pres', action='store_true', default=False, help="Use low precision")
 
 parser.add_argument('--local_rank', type=int, default=0)
 parser.add_argument('--world_size', type=int, default=2)
@@ -45,7 +46,8 @@ from alphaflow.config import model_config
 
 from alphaflow.utils.logging import get_logger
 logger = get_logger(__name__)
-torch.set_float32_matmul_precision(("medium" if args.lma or args.flash else 'high'))
+args.low_prec = args.lma or args.flash or args.low_pres # low precision used if any of these are set or if low_pres is set manually
+torch.set_float32_matmul_precision(("medium" if args.low_pres else 'high'))
     
 
 config = model_config(
@@ -110,6 +112,10 @@ def main():
     
     c = ckpt['hyper_parameters']['config']
     c.globals.chunk_size = args.chunk_size # setting to None means no chunking
+    if args.chunk_size is not None:
+        c.globals.offload_inference = True
+        c.model.template.offload_inference = True
+        
     if args.lma:
         c.globals.offload_inference = True
         c.globals.use_lma = True # Use Staats & Rabe's low-memory attention algorithm.
@@ -159,7 +165,7 @@ def main():
                         "device": "cpu",
                     }
                 }, 
-                dtype=(torch.bfloat16 if args.lma or args.flash else torch.float32),
+                dtype=(torch.bfloat16 if args.low_pres else torch.float32),
                 replace_with_kernel_inject=True,
                 )
     model = engine.module
