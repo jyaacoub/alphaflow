@@ -20,6 +20,9 @@ io_dir="${proj_dir}/data/davis/alphaflow_io/" #PATH TO INPUT_CSVs DIR
 
 cd "${proj_dir}/alphaflow"
 source ".venv-ds/bin/activate"
+#                                   For LMA use only, defaults are:
+export DEFAULT_LMA_Q_CHUNK_SIZE=512     # 1024
+export DEFAULT_LMA_KV_CHUNK_SIZE=2048   # 4096
 
 export CUDA_LAUNCH_BLOCKING=1
 
