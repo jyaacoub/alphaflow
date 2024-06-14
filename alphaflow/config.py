@@ -168,10 +168,11 @@ def model_config(
     if train:
         c.globals.blocks_per_ckpt = 1
         c.globals.chunk_size = None
-        c.globals.use_lma = False
-        c.globals.offload_inference = False
+        c.globals.use_lma = False # conflict with long_seq
+        c.globals.offload_inference = False # conflict
+        
         c.model.template.average_templates = False
-        c.model.template.offload_templates = False
+        c.model.template.offload_templates = False # Mutually exclusive with average_templates
     
     if low_prec:
         c.globals.eps = 1e-4

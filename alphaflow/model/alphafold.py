@@ -274,7 +274,7 @@ class AlphaFold(nn.Module):
                 z = self.extra_msa_stack._forward_offload(
                     input_tensors,
                     msa_mask=feats["extra_msa_mask"].to(dtype=m.dtype),
-                    chunk_size=self.globals.chunk_size,
+                    chunk_size=self.globals.chunk_size, # NOT CALLEd
                     use_lma=self.globals.use_lma,
                     pair_mask=pair_mask.to(dtype=m.dtype),
                     _mask_trans=self.config._mask_trans,
@@ -287,7 +287,7 @@ class AlphaFold(nn.Module):
                 z = self.extra_msa_stack(
                     a, z,
                     msa_mask=feats["extra_msa_mask"].to(dtype=m.dtype),
-                    chunk_size=self.globals.chunk_size,
+                    chunk_size=self.globals.chunk_size, # NOT CALLEd
                     use_lma=self.globals.use_lma,
                     pair_mask=pair_mask.to(dtype=m.dtype),
                     inplace_safe=inplace_safe,
@@ -301,11 +301,12 @@ class AlphaFold(nn.Module):
         if(self.globals.offload_inference):
             input_tensors = [m, z]
             del m, z
+            # print('alphaflow chunk_size', self.globals.chunk_size)
             m, z, s = self.evoformer._forward_offload(
                 input_tensors,
                 msa_mask=msa_mask.to(dtype=input_tensors[0].dtype),
                 pair_mask=pair_mask.to(dtype=input_tensors[1].dtype),
-                chunk_size=self.globals.chunk_size,
+                chunk_size=self.globals.chunk_size, # CALLED
                 use_lma=self.globals.use_lma,
                 _mask_trans=self.config._mask_trans,
             )
