@@ -13,12 +13,12 @@ The steps are fairly simple after installing alphaflow:
 
 **MPI python bindings and cuda are required by DeepSpeed for the pip install:**
 ```
+module load StdEnv/2020  intel/2020.1.217  cuda/11.4  openmpi/4.0.3
 module load mpi4py/3.1.3
-module load cuda/11.4
 ```
 
 ## 2. pip install deepspeed
-Make sure to load up the environment you created earlier for alphaflow
+Make sure to ACTIVATE the environment you created earlier for alphaflow (i.e.: run `source .venv/bin/activate`).
 
 From the yml for [OpenFoldv1.0.1](https://github.com/aqlaboratory/openfold/blob/42e71db7fa327e0810eb0e371abc9f82aa9b7a6a/environment.yml) they specify v0.5.10, but I was able to get it working with v0.12.4 so we will stick to that.
 
