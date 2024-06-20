@@ -47,7 +47,8 @@ ds_report
 ![alt text](<ds_report.png>)
 
 ## 4. Small fixes to OpenFold for Running `Deepspeedv0.12.4`
-NOTE THESE FIXES OCCUR **AFTER PIP INSTALL** IN YOUR `.venv/.venv/lib/python3.10/site-packages/openfold`
+NOTE THESE FIXES OCCUR **AFTER PIP INSTALL** IN YOUR `.venv/.venv/lib/python3.10/site-packages/openfold` DIRECTORY.
+- Total of 5 lines that need to be changed.
 
 See [issue#93 comment](https://github.com/jyaacoub/MutDTA/issues/93#issuecomment-2064138261):
 > Other than dependency errors the only other thing that needs to be adjusted for deepspeed to work is for the following error:
