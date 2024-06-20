@@ -47,6 +47,8 @@ ds_report
 ![alt text](<ds_report.png>)
 
 ## 4. Small fixes to OpenFold for Running `Deepspeedv0.12.4`
+NOTE THESE FIXES OCCUR **AFTER PIP INSTALL** IN YOUR `.venv/.venv/lib/python3.10/site-packages/openfold`
+
 See [issue#93 comment](https://github.com/jyaacoub/MutDTA/issues/93#issuecomment-2064138261):
 > Other than dependency errors the only other thing that needs to be adjusted for deepspeed to work is for the following error:
 > `AttributeError: module 'deepspeed.utils' has no attribute 'is_initialized'. Did you mean: 'initialize'?`
