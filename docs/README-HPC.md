@@ -5,9 +5,11 @@ The steps are fairly simple after installing alphaflow:
 1. Load correct modules
 2. pip install deepspeed
 3. test that environment worked by sallocing to GPU node
+4. Small fixes to OpenFold for Running `Deepspeedv0.12.4`
+5. Running Deepspeed
 
 
-### 1. load modules
+## 1. load modules
 
 **MPI python bindings and cuda are required by DeepSpeed for the pip install:**
 ```
@@ -15,7 +17,7 @@ module load mpi4py/3.1.3
 module load cuda/11.4
 ```
 
-### 2. pip install deepspeed
+## 2. pip install deepspeed
 Make sure to load up the environment you created earlier for alphaflow
 
 From the yml for [OpenFoldv1.0.1](https://github.com/aqlaboratory/openfold/blob/42e71db7fa327e0810eb0e371abc9f82aa9b7a6a/environment.yml) they specify v0.5.10, but I was able to get it working with v0.12.4 so we will stick to that.
@@ -34,7 +36,7 @@ Successfully installed annotated-types-0.6.0+computecanada deepspeed-0.12.4 hjso
 pip install transformers==4.39.3
 ```
 
-### 3. Test evironment
+## 3. Test evironment
 ```
 ds_report
 ```
@@ -44,5 +46,15 @@ ds_report
 3. run `ds_report`, the output should match the following 
 ![alt text](<ds_report.png>)
 
-### 4. Running Deepspeed
-Example `multi_run_alphaflow.sh` script can be modified for your purposes. HOWEVER, for LMA (only neccessary for long sequences; 1200+) you have to make a small modification to the installed OpenFold libraries as mentioned in https://github.com/aqlaboratory/openfold/pull/435
+## 4. Small fixes to OpenFold for Running `Deepspeedv0.12.4`
+See [issue#93 comment](https://github.com/jyaacoub/MutDTA/issues/93#issuecomment-2064138261):
+> Other than dependency errors the only other thing that needs to be adjusted for deepspeed to work is for the following error:
+> `AttributeError: module 'deepspeed.utils' has no attribute 'is_initialized'. Did you mean: 'initialize'?`
+> - deepspeed.utils.is_initialized has been deprecated in newer versions of DeepSpeed including v0.12.4
+> - The solution is to replace it with `deepspeed.comm.comm.is_initialized()`  in `openfold/model/primitives.py` (see [openfold issue page](https://github.com/aqlaboratory/openfold/issues/276) and [commit hotfix](https://github.com/EvanKomp/openfold/commit/450dbc3b2a5ca2d481f615aad7c25808e91219dc))
+
+Additionally for LMA (low-memory attention) to work you have to make some small adjustments as in https://github.com/aqlaboratory/openfold/pull/435.
+- **Note this is only really needed for extra long sequences that are 1200+**
+
+## 5. Running Deepspeed
+Example `multi_run_alphaflow.sh` script can be modified for your purposes.
