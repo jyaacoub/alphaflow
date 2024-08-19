@@ -57,7 +57,7 @@ from alphaflow.config import model_config
 
 from alphaflow.utils.logging import get_logger
 logger = get_logger(__name__)
-args.low_prec = args.lma or args.flash or args.low_pres # low precision used if any of these are set or if low_pres is set manually
+args.low_pres = args.lma or args.flash or args.low_pres # low precision used if any of these are set or if low_pres is set manually
 torch.set_float32_matmul_precision(("medium" if args.low_pres else 'high'))
     
 
